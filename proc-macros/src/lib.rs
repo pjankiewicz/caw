@@ -3,15 +3,8 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{format_ident, quote};
 use std::{collections::HashMap, mem};
-use syn::{
-    parse_macro_input, parse_quote,
-    punctuated::Punctuated,
-    token::{Comma, Plus},
-    AngleBracketedGenericArguments, Attribute, Expr, ExprLit, GenericArgument,
-    GenericParam, Generics, Ident, ItemStruct, Lit, LitStr, Meta, Path,
-    PathArguments, PathSegment, Token, Type, TypeParam, TypeParamBound,
-    TypePath, WhereClause, WherePredicate,
-};
+use syn::{DeriveInput, Data, Fields, parse_macro_input, parse_quote, punctuated::Punctuated, token::{Comma, Plus}, AngleBracketedGenericArguments, Attribute, Expr, ExprLit, GenericArgument, GenericParam, Generics, Ident, ItemStruct, Lit, LitStr, Meta, Path, PathArguments, PathSegment, Token, Type, TypeParam, TypeParamBound, TypePath, WhereClause, WherePredicate, DataStruct, Field};
+use syn::spanned::Spanned;
 
 fn convert_snake_to_camel(ident: Ident) -> Ident {
     let upper_camel_case_string =
@@ -464,4 +457,484 @@ pub fn builder(input: TokenStream) -> TokenStream {
         }
     };
     TokenStream::from(expanded)
+}
+
+#[proc_macro_derive(FromValue)]
+pub fn derive_from_value(input: TokenStream) -> TokenStream {
+    // Parse the input tokens into a syntax tree
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // Get the name of the enum
+    let name = &input.ident;
+    let variants = match &input.data {
+        Data::Enum(data_enum) => &data_enum.variants,
+        _ => panic!("FromValue can only be derived for enums"),
+    };
+
+    // Generate `impl From` for each variant
+    let from_impls = variants.iter().filter_map(|variant| {
+        let variant_ident = &variant.ident;
+        match &variant.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let ty = &fields.unnamed.first().unwrap().ty;
+                Some(quote! {
+	                    impl From<#ty> for #name {
+	                        fn from(value: #ty) -> Self {
+	                            #name::#variant_ident(value)
+	                        }
+	                    }
+	                })
+            }
+            _ => None,
+        }
+    });
+
+    let expanded = quote! {
+	        #(#from_impls)*
+	    };
+
+    TokenStream::from(expanded)
+}
+
+#[proc_macro_derive(FromExpr, attributes(init, optional, skip, from_expr))]
+pub fn derive_from_expr(input: TokenStream) -> TokenStream {
+    // Parse the input struct
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // Generate the code
+    let gen = impl_from_expr(&input);
+
+    // Return the generated code
+    TokenStream::from(gen)
+}
+fn impl_from_expr(input: &DeriveInput) -> proc_macro2::TokenStream {
+    let struct_name = &input.ident;
+
+    // Extract the variant name from attributes or default to struct name
+    let variant_name = get_variant_name(&input.attrs, struct_name);
+
+    // Extract the fields
+    let fields = if let Data::Struct(DataStruct {
+                                         fields: Fields::Named(ref fields),
+                                         ..
+                                     }) = input.data
+    {
+        fields.named.iter().collect::<Vec<&Field>>()
+    } else {
+        panic!("FromExpr can only be derived for structs with named fields");
+    };
+
+    // Initialize vectors for different types of fields
+    let mut init_fields = Vec::new();
+    let mut optional_fields = Vec::new();
+    let mut skipped_fields = Vec::new();
+    let mut all_fields = Vec::new();
+
+    for field in fields {
+        let field_name = field.ident.as_ref().unwrap();
+
+        all_fields.push(field_name);
+
+        let mut is_init = false;
+        let mut is_optional = false;
+        let mut is_skip = false;
+
+        // Check attributes
+        for attr in &field.attrs {
+            if attr.path().is_ident("init") {
+                is_init = true;
+            } else if attr.path().is_ident("optional") {
+                is_optional = true;
+            } else if attr.path().is_ident("skip") {
+                is_skip = true;
+            }
+        }
+
+        if is_skip {
+            skipped_fields.push(field);
+            continue;
+        }
+
+        if is_init {
+            init_fields.push(field);
+        } else if is_optional {
+            optional_fields.push(field);
+        } else {
+            // Detect Option types
+            if is_option_type(&field.ty) {
+                optional_fields.push(field);
+            } else {
+                init_fields.push(field);
+            }
+        }
+    }
+
+    // Build the code for required parameters
+    let mut required_params = Vec::new();
+    let mut required_conversions = Vec::new();
+    let mut required_expr_fields = Vec::new();
+    let mut all_expr_fields = Vec::new();
+
+    for field in all_fields {
+        all_expr_fields.push(quote! { #field });
+    }
+
+    for field in init_fields {
+        let field_name = field.ident.as_ref().unwrap();
+        required_params.push(quote! { #field_name });
+        required_expr_fields.push(quote! { #field_name });
+
+        let field_type_ident = get_base_type(&field.ty);
+
+        required_conversions.push(quote! {
+            let #field_name: #field_type_ident = #field_name.eval()?.try_into()
+                .map_err(|_| anyhow::anyhow!("Could not convert to {}", stringify!(#field_type_ident)))?;
+        });
+    }
+
+    // Build the code for optional parameters
+    let mut optional_conversions = Vec::new();
+    let mut optional_expr_fields = Vec::new();
+
+    for field in optional_fields {
+        let field_name = field.ident.as_ref().unwrap();
+        optional_expr_fields.push(quote! { #field_name });
+
+        let base_type = get_option_inner_type(&field.ty).unwrap_or_else(|| field.ty.clone());
+        let field_type_ident = get_base_type(&base_type);
+
+        optional_conversions.push(quote! {
+            if let Some(#field_name) = #field_name {
+                let #field_name: #field_type_ident = #field_name.eval()?.try_into()
+                    .map_err(|_| anyhow::anyhow!("Could not convert to {}", stringify!(#field_type_ident)))?;
+                builder = builder.#field_name(#field_name);
+            }
+        });
+    }
+
+    // Construct the builder initialization
+    let builder_new_call = if required_params.is_empty() {
+        quote! { let mut builder = Self::new(); }
+    } else {
+        quote! { let mut builder = Self::new(#(#required_params),*); }
+    };
+
+    // Combine everything into the final method
+    let method = quote! {
+        impl crate::ast::expr::FromExpr for #struct_name {
+            fn from_expr(expr: &crate::ast::expr::Expr) -> Result<crate::ast::value::Value, anyhow::Error> {
+                use anyhow::anyhow;
+
+                if let crate::ast::expr::Expr::#variant_name { #(#all_expr_fields),*, } = expr {
+                    #(#required_conversions)*
+
+                    #builder_new_call
+
+                    #(#optional_conversions)*
+
+                    Ok(builder.build().into())
+                } else {
+                    Err(anyhow!("Invalid expression for {}", stringify!(#struct_name)))
+                }
+            }
+        }
+    };
+
+    method
+}
+
+fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        path.segments
+            .last()
+            .map_or(false, |seg| seg.ident == "Option")
+    } else {
+        false
+    }
+}
+
+fn get_option_inner_type(ty: &Type) -> Option<Type> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.last() {
+            if segment.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                        return Some(inner_type.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_base_type(ty: &Type) -> Ident {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        if let Some(segment) = path.segments.last() {
+            return segment.ident.clone();
+        }
+    }
+    panic!("Unsupported type");
+}
+
+fn get_variant_name(attrs: &[Attribute], struct_name: &Ident) -> Ident {
+    for attr in attrs {
+        if attr.path().is_ident("from_expr") {
+            let args = attr.parse_args::<FromExprArgs>();
+            if let Ok(args) = args {
+                return args.variant_name;
+            }
+        }
+    }
+    struct_name.clone()
+}
+
+// Struct to parse the attribute arguments
+struct FromExprArgs {
+    variant_name: Ident,
+}
+
+impl syn::parse::Parse for FromExprArgs {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self, syn::Error> {
+        let ident: Ident = input.parse()?;
+        input.parse::<syn::Token![=]>()?;
+
+        if ident == "variant_name" {
+            let lit_str: LitStr = input.parse()?;
+            let variant_name = Ident::new(&lit_str.value(), lit_str.span());
+            Ok(FromExprArgs { variant_name })
+        } else {
+            Err(syn::Error::new(ident.span(), "Expected 'variant_name'"))
+        }
+    }
+}
+
+// CGP
+#[proc_macro_derive(FunctionSet, attributes(exclude_from_cgp))]
+pub fn derive_function_set(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let enum_name = &input.ident;
+
+    // Ensure we're deriving on an enum
+    let enum_data = match input.data {
+        Data::Enum(ref data_enum) => data_enum,
+        _ => panic!("FunctionSet can only be derived on enums"),
+    };
+
+    let mut function_variants = Vec::new();
+
+    // Iterate over each variant
+    let mut idx = 0 as usize;
+    for (_, variant) in enum_data.variants.iter().enumerate() {
+        // Check for the exclude attribute
+        let exclude = variant
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("exclude_from_cgp"));
+
+        if exclude {
+            continue;
+        }
+
+        // Get the variant name
+        let variant_name = &variant.ident;
+
+        // Calculate arity and generate field assignments
+        let (arity, field_assignments) = calculate_arity_and_assignments(&variant.fields);
+
+        function_variants.push((idx, variant_name.clone(), arity, field_assignments));
+
+        idx += 1;
+    }
+
+    // Generate the function_set method
+    let function_set_entries = function_variants.iter().map(
+        |(idx, variant_name, arity, field_assignments)| {
+            let arity_value = match arity {
+                Some(n) => quote! { Some(#n) },
+                None => quote! { None }, // Variable arity
+            };
+
+            if field_assignments.is_empty() {
+                quote! {
+                    {
+                        fn constructor(inputs: &[Expr], input_idx: &mut usize) -> Expr {
+                            Expr::#variant_name
+                        }
+                        (stringify!(#variant_name).to_string(), #idx, #arity_value, constructor)
+                    }
+                }
+            } else {
+                quote! {
+                    {
+                        fn constructor(inputs: &[Expr], input_idx: &mut usize) -> Expr {
+                            Expr::#variant_name {
+                                #(#field_assignments)*
+                            }
+                        }
+                        (stringify!(#variant_name).to_string(), #idx, #arity_value, constructor)
+                    }
+                }
+            }
+        },
+    );
+
+    let expanded = quote! {
+        impl Expr {
+            pub fn function_set() -> Vec<(String, usize, Option<usize>, fn(&[Expr], &mut usize) -> Expr)> {
+                vec![
+                    #(#function_set_entries),*
+                ]
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+fn calculate_arity_and_assignments(
+    fields: &Fields,
+) -> (Option<usize>, Vec<proc_macro2::TokenStream>) {
+    let mut arity = 0;
+    let mut has_variable = false;
+    let mut assignments = Vec::new();
+
+    match fields {
+        Fields::Named(fields_named) => {
+            for field in fields_named.named.iter() {
+                let field_name = field.ident.clone().unwrap();
+                let ty = &field.ty;
+                let (field_arity, assignment) = generate_field_assignment(&field_name, ty);
+                if field_arity.is_none() {
+                    has_variable = true;
+                } else {
+                    arity += field_arity.unwrap();
+                }
+                assignments.push(assignment);
+            }
+        }
+        Fields::Unnamed(fields_unnamed) => {
+            for (idx, field) in fields_unnamed.unnamed.iter().enumerate() {
+                let field_name = Ident::new(&format!("field{}", idx), field.span());
+                let ty = &field.ty;
+                let (field_arity, assignment) = generate_field_assignment(&field_name, ty);
+                if field_arity.is_none() {
+                    has_variable = true;
+                } else {
+                    arity += field_arity.unwrap();
+                }
+                assignments.push(assignment);
+            }
+        }
+        Fields::Unit => {}
+    }
+
+    let total_arity = if has_variable { None } else { Some(arity) };
+    (total_arity, assignments)
+}
+
+fn generate_field_assignment(
+    field_name: &Ident,
+    ty: &Type,
+) -> (Option<usize>, proc_macro2::TokenStream) {
+    if is_box_expr(ty) {
+        // Box<Expr> field
+        let assignment = quote! {
+            #field_name: {
+                let expr = Box::new(inputs[*input_idx].clone());
+                *input_idx += 1;
+                expr
+            },
+        };
+        (Some(1), assignment)
+    } else if is_option_box_expr(ty) {
+        // Option<Box<Expr>> field
+        let assignment = quote! {
+            #field_name: {
+                let expr = Some(Box::new(inputs[*input_idx].clone()));
+                *input_idx += 1;
+                expr
+            },
+        };
+        (Some(1), assignment)
+    } else if is_vec_box_expr(ty) {
+        // Vec<Box<Expr>> field
+        let assignment = quote! {
+            #field_name: {
+                let remaining_inputs = &inputs[*input_idx..];
+                let vec = remaining_inputs.iter().map(|e| Box::new(e.clone())).collect();
+                *input_idx = inputs.len();
+                vec
+            },
+        };
+        (None, assignment) // Variable arity
+    } else {
+        // Other types, provide a default value or handle as needed
+        let assignment = quote! {
+            #field_name: Default::default(),
+        };
+        (Some(0), assignment)
+    }
+}
+
+// Helper functions to identify field types
+fn is_box_expr(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let segments = &type_path.path.segments;
+        if segments.len() == 1 && segments[0].ident == "Box" {
+            if let syn::PathArguments::AngleBracketed(angle_bracketed) = &segments[0].arguments {
+                if angle_bracketed.args.len() == 1 {
+                    if let syn::GenericArgument::Type(inner_ty) = &angle_bracketed.args[0] {
+                        if is_expr_type(inner_ty) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_option_box_expr(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let segments = &type_path.path.segments;
+        if segments.len() == 1 && segments[0].ident == "Option" {
+            if let syn::PathArguments::AngleBracketed(angle_bracketed) = &segments[0].arguments {
+                if angle_bracketed.args.len() == 1 {
+                    if let syn::GenericArgument::Type(inner_ty) = &angle_bracketed.args[0] {
+                        return is_box_expr(inner_ty);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_vec_box_expr(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let segments = &type_path.path.segments;
+        if segments.len() == 1 && segments[0].ident == "Vec" {
+            if let syn::PathArguments::AngleBracketed(angle_bracketed) = &segments[0].arguments {
+                if angle_bracketed.args.len() == 1 {
+                    if let syn::GenericArgument::Type(inner_ty) = &angle_bracketed.args[0] {
+                        return is_box_expr(inner_ty);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn is_expr_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        let segments = &type_path.path.segments;
+        if segments.len() == 1 && segments[0].ident == "Expr" {
+            return true;
+        }
+    }
+    false
 }

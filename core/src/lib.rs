@@ -21,6 +21,7 @@ pub mod oscillator;
 pub mod signal;
 pub mod signal_arithmetic;
 
+pub mod ast;
 pub mod prelude {
     #[cfg(feature = "midi")]
     pub use crate::midi::{

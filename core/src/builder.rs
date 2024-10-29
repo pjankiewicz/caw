@@ -1,9 +1,13 @@
+
 pub mod env {
+    use caw_proc_macros::FromExpr;
     use crate::{
         envelope::AdsrLinear01,
         signal::{const_, Gate, Sf64, Trigger},
     };
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "AdsrLinear01")]
     pub struct AdsrLinear01Builder {
         key_down: Gate,
         key_press: Option<Trigger>,
@@ -71,13 +75,17 @@ pub mod env {
 }
 
 pub mod oscillator {
+    use caw_proc_macros::FromExpr;
     use crate::{
         oscillator::{Oscillator, Waveform},
         signal::{const_, sfreq_hz, sfreq_s, Sf64, Sfreq, Signal, Trigger},
     };
+    use crate::signal::SWaveform;
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Oscillator")]
     pub struct OscillatorBuilder {
-        waveform: Signal<Waveform>,
+        waveform: SWaveform,
         freq: Sfreq,
         pulse_width_01: Option<Sf64>,
         reset_trigger: Option<Trigger>,
@@ -148,6 +156,37 @@ pub mod oscillator {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "OscillatorSimple")]
+    pub struct OscillatorSimpleBuilder {
+        waveform: SWaveform,
+        freq: Sfreq,
+    }
+
+    impl OscillatorSimpleBuilder {
+        pub fn new(
+            waveform: impl Into<Signal<Waveform>>,
+            freq: impl Into<Sfreq>,
+        ) -> Self {
+            Self {
+                waveform: waveform.into(),
+                freq: freq.into()
+            }
+        }
+
+        pub fn build(self) -> Sf64 {
+            Oscillator {
+                waveform: self.waveform,
+                freq: self.freq,
+                pulse_width_01: const_(0.5),
+                reset_trigger: Trigger::never(),
+                reset_offset_01: const_(0.0),
+                hard_sync: const_(0.0),
+            }
+                .signal()
+        }
+    }
+
     pub fn oscillator(
         waveform: impl Into<Signal<Waveform>>,
         freq: impl Into<Sfreq>,
@@ -171,11 +210,14 @@ pub mod oscillator {
 }
 
 pub mod gate {
+    use caw_proc_macros::FromExpr;
     use crate::{
         clock::{PeriodicGate, PeriodicTrigger},
         signal::{const_, sfreq_hz, sfreq_s, Gate, Sf64, Sfreq, Trigger},
     };
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "PeriodicGate")]
     pub struct PeriodicGateBuilder {
         freq: Sfreq,
         duty_01: Option<Sf64>,
@@ -253,13 +295,18 @@ pub mod gate {
 }
 
 pub mod filter {
+    use caw_proc_macros::FromExpr;
+
     use crate::{
         filters::*,
         signal::{const_, Sf64, Sfreq, Trigger},
     };
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "LowPassButterworth")]
     pub struct LowPassButterworthBuilder {
         cutoff_hz: Sf64,
+        #[skip]
         filter_order_half: usize,
     }
 
@@ -281,8 +328,11 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "HighPassButterworth")]
     pub struct HighPassButterworthBuilder {
         cutoff_hz: Sf64,
+        #[skip]
         filter_order_half: usize,
     }
 
@@ -304,9 +354,12 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "BandPassButterworth")]
     pub struct BandPassButterworthBuilder {
         cutoff_hz_lower: Sf64,
         cutoff_hz_upper: Sf64,
+        #[skip]
         filter_order_quarter: usize,
     }
 
@@ -381,9 +434,12 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "LowPassChebyshev")]
     pub struct LowPassChebyshevBuilder {
         cutoff_hz: Sf64,
         resonance: Option<Sf64>,
+        #[skip]
         filter_order_half: usize,
     }
 
@@ -415,9 +471,12 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "HighPassChebyshev")]
     pub struct HighPassChebyshevBuilder {
         cutoff_hz: Sf64,
         resonance: Option<Sf64>,
+        #[skip]
         filter_order_half: usize,
     }
 
@@ -449,7 +508,10 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "BandPassChebyshev")]
     pub struct BandPassChebyshevBuilder {
+        #[skip]
         filter_order_quarter: usize,
         cutoff_hz_lower: Sf64,
         cutoff_hz_upper: Sf64,
@@ -542,6 +604,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "LowPassMoogLadder")]
     pub struct LowPassMoogLadderBuilder {
         cutoff_hz: Sf64,
         resonance: Option<Sf64>,
@@ -568,6 +632,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Saturate")]
     pub struct SaturateBuilder {
         scale: Option<Sf64>,
         max: Option<Sf64>,
@@ -614,6 +680,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Compress")]
     pub struct CompressBuilder {
         threshold: Option<Sf64>,
         ratio: Option<Sf64>,
@@ -653,6 +721,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Delay")]
     pub struct DelayBuilder {
         time_s: Option<Sf64>,
     }
@@ -672,6 +742,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Echo")]
     pub struct EchoBuilder {
         time_s: Option<Sf64>,
         scale: Option<Sf64>,
@@ -735,6 +807,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "Reverb")]
     pub struct ReverbBuilder {
         damping: Option<Sf64>,
         room_size: Option<Sf64>,
@@ -768,6 +842,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "EnvelopeFollower")]
     pub struct EnvelopeFollowerBuilder {
         sensitivity_hz: Option<Sf64>,
     }
@@ -794,6 +870,8 @@ pub mod filter {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "NoiseGate")]
     pub struct NoiseGateBuilder {
         control: Sf64,
         threshold: Option<Sf64>,
@@ -934,15 +1012,19 @@ pub mod filter {
 }
 
 pub mod loopers {
+    use caw_proc_macros::FromExpr;
     use crate::{
         loopers::*,
         signal::{const_, Gate, Su8, Trigger},
     };
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "ClockedTriggerLooper")]
     pub struct ClockedTriggerLooperBuilder {
         clock: Option<Trigger>,
         add: Option<Gate>,
         remove: Option<Gate>,
+        #[skip]
         length: Option<usize>,
     }
 
@@ -987,11 +1069,14 @@ pub mod loopers {
         }
     }
 
+    #[derive(FromExpr)]
+    #[from_expr(variant_name = "ClockedMidiNoteMonophonicLooper")]
     pub struct ClockedMidiNoteMonophonicLooperBuilder {
         clock: Option<Trigger>,
         input_gate: Option<Gate>,
         input_midi_index: Option<Su8>,
         clear: Option<Gate>,
+        #[skip]
         length: Option<usize>,
     }
 

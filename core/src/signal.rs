@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
+use crate::oscillator::Waveform;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Freq {
@@ -228,8 +229,10 @@ impl<T: Clone + Default + std::fmt::Debug + 'static> Signal<T> {
 pub type Sfreq = Signal<Freq>;
 pub type Sf64 = Signal<f64>;
 pub type Sf32 = Signal<f32>;
+pub type Su32 = Signal<u32>;
 pub type Sbool = Signal<bool>;
 pub type Su8 = Signal<u8>;
+pub type SWaveform = Signal<Waveform>;
 
 pub fn const_<T: Clone + Default + 'static>(value: T) -> Signal<T> {
     Signal::from_fn(move |_| value.clone())

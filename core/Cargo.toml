@@ -15,6 +15,13 @@ midi = ["midly"]
 web = ["getrandom/js"]
 
 [dependencies]
+anyhow = "1.0.75"
 rand = "0.8"
 getrandom = "0.2"
 midly = { version = "0.5", optional = true }
+caw_proc_macros = { path = "../proc-macros", default-features = false }
+cpal = "0.15"
+log = "0.4"
+
+[[example]]
+name = "cgp_example"

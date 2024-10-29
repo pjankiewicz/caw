@@ -6,10 +6,15 @@ use cpal::{
 };
 use std::sync::{mpsc, Arc, RwLock};
 
+<<<<<<< Updated upstream
 fn signal() -> SigBuf<impl Sig<Item = f32, Buf = Vec<f32>>> {
     oscillator(waveform::Saw, freq_hz(40.0))
+=======
+fn signal() -> impl Signal<Item = f64, SampleBuffer = Vec<f64>> {
+    oscillator(waveform::Sine, freq_hz(440.0))
+>>>>>>> Stashed changes
         .build()
-        .zip(oscillator(waveform::Saw, freq_hz(40.1)).build())
+        .zip(oscillator(waveform::Saw, freq_hz(441.0)).build())
         .map(|(a, b)| (a + b) / 10.0)
 }
 

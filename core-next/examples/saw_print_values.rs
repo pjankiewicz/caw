@@ -10,8 +10,9 @@ fn main() {
     let ctx = SigCtx {
         sample_rate_hz: 3000.0,
         batch_index: 0,
+        num_samples: 0,
     };
-    buffered_signal.sample_batch(&ctx, 42);
+    buffered_signal.sample_batch(&ctx);
     for x in buffered_signal.samples() {
         println!("{}", x);
     }
